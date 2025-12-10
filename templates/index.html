@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Flask版メモ帳</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<h2>メモ帳</h2>
+
+<div class="container">
+
+    <!-- 左側：入力欄 -->
+    <div class="editor">
+        <input type="text" id="memoTitle" class="title-input" placeholder="タイトルを入力してください">
+
+        <textarea id="memoInput" class="auto-wrap" placeholder="ここにメモを入力してください"></textarea>
+
+        <div>
+            <button onclick="saveMemo()">保存</button>
+            <button onclick="newMemo()">新規作成</button>
+            <span id="editingState" class="editing-label" style="display:none;">編集モード</span>
+        </div>
+    </div>
+
+    <!-- 右側：メモ一覧 -->
+    <div class="list-area">
+        <h3>保存したメモ一覧</h3>
+        <ul id="memoList"></ul>
+    </div>
+
+</div>
+
+
+<script>
+let editingId = null;
+
+
+// ------------------------
+// メモ一覧の読み込み
+// ------------------------
+async function loadMemos() {
+    const res = await fetch("/api/memos");
+    const memos = await res.json();
+
+    const list = document.getElementById("memoList");
+    list.innerHTML = "";
+
+    if (memos.length === 0) {
+        const li = document.createElement("li");
+        li.textContent = "保存されたメモはありません。";
+        list.appendChild(li);
+        return;
+    }
+
+    memos.forEach(memo => {
+        const li = document.createElement("li");
+
+        const title = document.createElement("span");
+        title.className = "memo-title";
+        title.textContent = memo.title;
+        li.appendChild(title);
+
+        const actions = document.createElement("div");
+        actions.className = "memo-actions";
+
+        const editBtn = document.createElement("button");
+        editBtn.textContent = "編集";
+        editBtn.onclick = () => editMemo(memo);
+
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "削除";
+        delBtn.onclick = () => deleteMemo(memo.id);
+
+        actions.appendChild(editBtn);
+        actions.appendChild(delBtn);
+
+        li.appendChild(actions);
+        list.appendChild(li);
+    });
+}
+
+
+// ------------------------
+// 新規作成
+// ------------------------
+function newMemo() {
+    document.getElementById("memoTitle").value = "";
+    document.getElementById("memoInput").value = "";
+    editingId = null;
+    updateEditingLabel();
+}
+
+
+// ------------------------
+// 編集モードに切り替え
+// ------------------------
+function editMemo(memo) {
+    document.getElementById("memoTitle").value = memo.title;
+    document.getElementById("memoInput").value = memo.content;
+
+    editingId = memo.id;
+    updateEditingLabel();
+}
+
+
+// ------------------------
+// メモ保存（新規 or 更新）
+// ------------------------
+async function saveMemo() {
+    const title = document.getElementById("memoTitle").value.trim();
+    const content = document.getElementById("memoInput").value.trim();
+
+    if (!title || !content) {
+        alert("タイトルと内容を入力してください。");
+        return;
+    }
+
+    await fetch("/api/save", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            id: editingId,
+            title: title,
+            content: content
+        })
+    });
+
+    newMemo();
+    loadMemos();
+}
+
+
+// ------------------------
+// メモ削除
+// ------------------------
+async function deleteMemo(id) {
+    if (!confirm("このメモを削除しますか？")) return;
+
+    await fetch("/api/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ id: id })
+    });
+
+    if (editingId === id) newMemo();
+    loadMemos();
+}
+
+
+// 編集ラベル切り替え
+function updateEditingLabel() {
+    document.getElementById("editingState").style.display =
+        editingId === null ? "none" : "inline";
+}
+
+
+// ------------------------
+// 初期表示
+// ------------------------
+loadMemos();
+</script>
+
+</body>
+</html>
