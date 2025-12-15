@@ -7,21 +7,20 @@ from psycopg.rows import dict_row
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
 
-DATABASE_URL = os.environ.get("DATABASE_URL") # PostgreSQLの接続URL　環境変数
-
+def get_database_url():
+    # 毎回読む（起動時点で未設定→後で設定、のケースにも強くなる）
+    return os.environ.get("DATABASE_URL")
 
 def get_conn():
-    if not DATABASE_URL:
+    db_url = get_database_url()
+    if not db_url:
         raise RuntimeError("DATABASE_URL が未設定です")
-    return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
-
-
+    return psycopg.connect(db_url, sslmode="require", row_factory=dict_row)
 
 def get_user_id():
     if "user_id" not in session:
         session["user_id"] = str(uuid.uuid4())
     return session["user_id"]
-
 
 def init_db():
     with get_conn() as conn:
@@ -35,13 +34,19 @@ def init_db():
                     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
                 );
+                CREATE INDEX IF NOT EXISTS idx_memos_user_id ON memos(user_id);
             """)
         conn.commit()
 
+# Flask3対応：before_first_request の代わり
+_db_initialized = False
 
-@app.before_first_request
-def startup():
-    init_db()
+@app.before_request
+def ensure_db_initialized():
+    global _db_initialized
+    if not _db_initialized:
+        init_db()
+        _db_initialized = True
 
 
 @app.route("/")
@@ -54,7 +59,7 @@ def index():
 def get_memos():
     user_id = get_user_id()
     with get_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
+        with conn.cursor() as cur:
             cur.execute(
                 "SELECT id, title, content FROM memos WHERE user_id=%s ORDER BY id DESC",
                 (user_id,)
@@ -74,7 +79,7 @@ def save_memo():
         return jsonify({"error": "title と content は必須"}), 400
 
     with get_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
+        with conn.cursor() as cur:
             if memo_id is None:
                 cur.execute(
                     "INSERT INTO memos (user_id, title, content) VALUES (%s,%s,%s) RETURNING id,title,content",
@@ -102,6 +107,9 @@ def delete_memo():
     user_id = get_user_id()
     memo_id = (request.json or {}).get("id")
 
+    if memo_id is None:
+        return jsonify({"error": "id は必須"}), 400
+
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -113,8 +121,3 @@ def delete_memo():
         conn.commit()
 
     return jsonify({"ok": True})
-
-
-
- #ローカル用if __name__ == "__main__":
-   # app.run(debug=True)
