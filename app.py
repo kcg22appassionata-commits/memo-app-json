@@ -1,79 +1,121 @@
-from flask import Flask, render_template, request, jsonify
-import json
 import os
+import uuid
+from flask import Flask, render_template, request, jsonify, session
+import psycopg
+from psycopg.rows import dict_row
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
 
-MEMO_FILE = "memos.json"
-
-
-# ---------- メモ読み込み ----------
-def load_memos():
-    if not os.path.exists(MEMO_FILE):
-        return []
-    with open(MEMO_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+DATABASE_URL = os.environ.get("postgresql://memo_user:oPBFnhkqJ8M30m7qF5zZg9OwdKjStPqG@dpg-d4vre663jp1c73erbs8g-a/memo_db_f2im") # PostgreSQLの接続URL　環境変数
 
 
-# ---------- メモ保存 ----------
-def save_memos(memos):
-    with open(MEMO_FILE, "w", encoding="utf-8") as f:
-        json.dump(memos, f, ensure_ascii=False, indent=4)
+def get_conn():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL が未設定です")
+    return psycopg.connect(
+        DATABASE_URL,
+        sslmode="require"
+    )
+
+
+def get_user_id():
+    if "user_id" not in session:
+        session["user_id"] = str(uuid.uuid4())
+    return session["user_id"]
+
+
+def init_db():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS memos (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """)
+        conn.commit()
+
+
+@app.before_first_request
+def startup():
+    init_db()
 
 
 @app.route("/")
 def index():
+    get_user_id()
     return render_template("index.html")
 
 
-# ---------- メモ一覧取得 ----------
-@app.route("/api/memos", methods=["GET"])
-def api_get_memos():
-    memos = load_memos()
-    return jsonify(memos)
+@app.route("/api/memos")
+def get_memos():
+    user_id = get_user_id()
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT id, title, content FROM memos WHERE user_id=%s ORDER BY id DESC",
+                (user_id,)
+            )
+            return jsonify(cur.fetchall())
 
 
-# ---------- メモ保存（新規 or 更新） ----------
 @app.route("/api/save", methods=["POST"])
-def api_save():
-    data = request.json
+def save_memo():
+    user_id = get_user_id()
+    data = request.json or {}
     memo_id = data.get("id")
-    title = data.get("title")
-    content = data.get("content")
+    title = (data.get("title") or "").strip()
+    content = (data.get("content") or "").strip()
 
-    memos = load_memos()
+    if not title or not content:
+        return jsonify({"error": "title と content は必須"}), 400
 
-    if memo_id is None:  
-        # 新規メモ
-        new_memo = {
-            "id": int(__import__("time").time() * 1000),
-            "title": title,
-            "content": content
-        }
-        memos.insert(0, new_memo)
-    else:
-        # 編集（id一致するメモを更新）
-        for m in memos:
-            if m["id"] == memo_id:
-                m["title"] = title
-                m["content"] = content
-                break
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            if memo_id is None:
+                cur.execute(
+                    "INSERT INTO memos (user_id, title, content) VALUES (%s,%s,%s) RETURNING id,title,content",
+                    (user_id, title, content)
+                )
+                memo = cur.fetchone()
+            else:
+                cur.execute(
+                    """UPDATE memos
+                       SET title=%s, content=%s, updated_at=NOW()
+                       WHERE id=%s AND user_id=%s
+                       RETURNING id,title,content""",
+                    (title, content, memo_id, user_id)
+                )
+                memo = cur.fetchone()
+                if memo is None:
+                    return jsonify({"error": "更新対象が見つかりません"}), 404
+        conn.commit()
 
-    save_memos(memos)
-    return jsonify({"status": "ok"})
+    return jsonify({"ok": True, "memo": memo})
 
 
-# ---------- メモ削除 ----------
 @app.route("/api/delete", methods=["POST"])
-def api_delete():
-    data = request.json
-    memo_id = data.get("id")
+def delete_memo():
+    user_id = get_user_id()
+    memo_id = (request.json or {}).get("id")
 
-    memos = load_memos()
-    memos = [m for m in memos if m["id"] != memo_id]
-    save_memos(memos)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM memos WHERE id=%s AND user_id=%s",
+                (memo_id, user_id)
+            )
+            if cur.rowcount == 0:
+                return jsonify({"error": "削除対象なし"}), 404
+        conn.commit()
 
-    return jsonify({"status": "ok"})
+    return jsonify({"ok": True})
+
 
 
  #ローカル用if __name__ == "__main__":
