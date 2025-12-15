@@ -7,16 +7,14 @@ from psycopg.rows import dict_row
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
 
-DATABASE_URL = os.environ.get("postgresql://memo_user:oPBFnhkqJ8M30m7qF5zZg9OwdKjStPqG@dpg-d4vre663jp1c73erbs8g-a/memo_db_f2im") # PostgreSQLの接続URL　環境変数
+DATABASE_URL = os.environ.get("DATABASE_URL") # PostgreSQLの接続URL　環境変数
 
 
 def get_conn():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL が未設定です")
-    return psycopg.connect(
-        DATABASE_URL,
-        sslmode="require"
-    )
+    return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
+
 
 
 def get_user_id():
